@@ -462,7 +462,7 @@ div[data-testid="stVerticalBlock"] > div { gap: 0 !important; }
 
 
 # ==========================================================
-# FONCTIONS D'EXTRACTION (depuis moyenneOr.py — intégrées)
+# FONCTIONS D'EXTRACTION (depuis moyenneOr.py)
 # ==========================================================
 
 def extraire_mo_depuis_page(driver):
@@ -625,10 +625,13 @@ if not os.path.exists(FILE_PATH):
     st.stop()
 
 try:
-    df_data = pd.read_excel(FILE_PATH)
+    df_data = pd.read_excel(FILE_PATH, sheet_name="CAS_GSFA")
 except Exception as e:
-    st.error(f"Impossible de lire newachercher.xlsx : {e}")
-    st.stop()
+    try:
+        df_data = pd.read_excel(FILE_PATH)
+    except Exception as e2:
+        st.error(f"Impossible de lire newachercher.xlsx : {e2}")
+        st.stop()
 
 if "MATRICULE" not in df_data.columns:
     st.error("Colonne 'MATRICULE' absente du fichier Excel.")
@@ -652,7 +655,7 @@ with col_s:
     )
 with col_e:
     end_idx = st.number_input(
-        "Fin", min_value=start_idx, max_value=total_lignes, value=total_lignes, step=1
+        "Fin", min_value=start_idx, max_value=total_lignes, value=min(10, total_lignes), step=1
     )
 with col_btn:
     lancer = st.button(
@@ -832,219 +835,4 @@ if st.session_state.running:
 
     driver = None
     try:
-        driver = webdriver.Chrome(options=construire_chrome_options())
-        driver.execute_script(
-            "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"
-        )
-        driver.set_window_size(1366, 768)
-        log("Chrome démarré ✓", "log-ok")
-
-        base_url = "https://bourses.mendob.ci/index.php?adr=consultnotesbepc.inc"
-
-        for i, matricule in enumerate(matricules):
-
-            if not st.session_state.running:
-                log("⏹ Arrêt demandé", "log-err")
-                break
-
-            pos = i + 1
-
-            # Pauses adaptatives anti-ban
-            if pos > 1 and pos % 100 == 0:
-                pause = random.randint(45, 90)
-                log(f"Pause longue {pause}s...", "log-wait")
-                render_logs(st.session_state.logs)
-                time.sleep(pause)
-            elif pos > 1 and pos % 25 == 0:
-                pause = random.randint(15, 30)
-                log(f"Pause {pause}s...", "log-wait")
-                render_logs(st.session_state.logs)
-                time.sleep(pause)
-
-            log(f"[{pos}/{a_traiter}] Matricule: {matricule}", "log-info")
-
-            try:
-                driver.get(base_url)
-                WebDriverWait(driver, 20).until(
-                    lambda d: d.execute_script("return document.readyState") == "complete"
-                )
-                time.sleep(random.uniform(3, 6))
-
-                # Trouver le champ de saisie
-                champ = None
-                for sel in [
-                    "input[name='matricule']",
-                    "input[placeholder*='matricule' i]",
-                    "input[type='text']", "input[type='number']",
-                    "#matricule", ".form-control", "input"
-                ]:
-                    try:
-                        c = WebDriverWait(driver, 8).until(
-                            EC.presence_of_element_located((By.CSS_SELECTOR, sel))
-                        )
-                        if c.is_displayed() and c.is_enabled():
-                            champ = c
-                            break
-                    except Exception:
-                        continue
-
-                if champ is None:
-                    log(f"  ✗ Champ introuvable", "log-err")
-                    st.session_state.results.append({
-                        "Matricule": matricule, "MO": None,
-                        "Statut": "ERREUR_TECHNIQUE",
-                        "Détails": "Champ matricule introuvable",
-                        "Date": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                    })
-                    st.session_state.total_fail += 1
-                    st.session_state.total_traite += 1
-                    render_logs(st.session_state.logs)
-                    render_kpis(
-                        st.session_state.total_traite, a_traiter,
-                        st.session_state.total_ok, st.session_state.total_fail,
-                        st.session_state.total_introuvable
-                    )
-                    continue
-
-                # Saisie progressive (imitation humaine)
-                champ.clear()
-                time.sleep(0.4)
-                for char in str(matricule):
-                    champ.send_keys(char)
-                    time.sleep(random.uniform(0.08, 0.22))
-
-                # Soumission
-                try:
-                    btn = driver.find_element(
-                        By.CSS_SELECTOR,
-                        "button[type='submit'], input[type='submit'], .btn, button"
-                    )
-                    driver.execute_script("arguments[0].click();", btn)
-                except Exception:
-                    champ.send_keys(Keys.RETURN)
-
-                time.sleep(random.uniform(8, 15))
-
-                # Vérification résultat
-                page_text = driver.find_element(By.TAG_NAME, "body").text.lower()
-                mots_err  = [
-                    "matricule non reconnu", "introuvable",
-                    "non trouvé", "not found", "aucun résultat", "erreur"
-                ]
-
-                if any(m in page_text for m in mots_err):
-                    log(f"  ✗ Matricule inconnu", "log-err")
-                    st.session_state.results.append({
-                        "Matricule": matricule, "MO": None,
-                        "Statut": "MATRICULE_INTROUVABLE",
-                        "Détails": "Absent de la base Mendob",
-                        "Date": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                    })
-                    st.session_state.total_introuvable += 1
-                else:
-                    log(f"  🔍 Extraction MO...", "log-wait")
-                    mo_val, mo_src = extraire_mo_depuis_page(driver)
-
-                    if mo_val is not None:
-                        log(f"  ✅ MO = {mo_val:.2f}", "log-ok")
-                        st.session_state.results.append({
-                            "Matricule": matricule, "MO": mo_val,
-                            "Statut": "MO_EXTRAITE",
-                            "Détails": (mo_src or "")[:100],
-                            "Date": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                        })
-                        st.session_state.total_ok += 1
-                    else:
-                        log(f"  ⚠ MO non détectée", "log-err")
-                        dbg = f"debug_MO_{matricule}_{pos}.html"
-                        try:
-                            with open(dbg, "w", encoding="utf-8") as f:
-                                f.write(driver.page_source)
-                        except Exception:
-                            pass
-                        st.session_state.results.append({
-                            "Matricule": matricule, "MO": None,
-                            "Statut": "MO_NON_DETECTEE",
-                            "Détails": f"Debug: {dbg}",
-                            "Date": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                        })
-                        st.session_state.total_fail += 1
-
-                st.session_state.total_traite += 1
-
-                # Checkpoint tous les 50
-                if pos % 50 == 0 and st.session_state.results:
-                    cp = f"checkpoint_MO_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
-                    pd.DataFrame(st.session_state.results).to_csv(
-                        cp, index=False, encoding="utf-8"
-                    )
-                    log(f"  💾 Checkpoint: {cp}", "log-ok")
-
-                render_logs(st.session_state.logs)
-                render_kpis(
-                    st.session_state.total_traite, a_traiter,
-                    st.session_state.total_ok, st.session_state.total_fail,
-                    st.session_state.total_introuvable
-                )
-
-                time.sleep(random.uniform(4, 10))
-                driver.delete_all_cookies()
-
-            except Exception as ex:
-                log(f"  ✗ Exception: {str(ex)[:70]}", "log-err")
-                st.session_state.results.append({
-                    "Matricule": matricule, "MO": None,
-                    "Statut": "ERREUR_TECHNIQUE",
-                    "Détails": str(ex)[:100],
-                    "Date": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                })
-                st.session_state.total_fail += 1
-                st.session_state.total_traite += 1
-                render_logs(st.session_state.logs)
-                render_kpis(
-                    st.session_state.total_traite, a_traiter,
-                    st.session_state.total_ok, st.session_state.total_fail,
-                    st.session_state.total_introuvable
-                )
-                time.sleep(5)
-
-    except Exception as ex:
-        log(f"Erreur fatale: {ex}", "log-err")
-        if st.session_state.results:
-            urg = f"urgence_MO_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
-            pd.DataFrame(st.session_state.results).to_csv(urg, index=False, encoding="utf-8")
-            log(f"🆘 Urgence sauvé: {urg}", "log-ok")
-
-    finally:
-        if driver:
-            try:
-                driver.quit()
-                log("Navigateur fermé.", "log-wait")
-            except Exception:
-                pass
-        st.session_state.running = False
-        st.session_state.termine = True
-        render_logs(st.session_state.logs)
-        render_kpis(
-            st.session_state.total_traite,
-            st.session_state.total_a_traiter or 1,
-            st.session_state.total_ok,
-            st.session_state.total_fail,
-            st.session_state.total_introuvable,
-        )
-        if st.session_state.results:
-            render_result_final(st.session_state.results)
-
-# ==========================================================
-# ETAT TERMINE (rechargement après fin)
-# ==========================================================
-if st.session_state.termine and st.session_state.results and not st.session_state.running:
-    render_logs(st.session_state.logs)
-    render_kpis(
-        st.session_state.total_traite,
-        st.session_state.total_a_traiter or 1,
-        st.session_state.total_ok,
-        st.session_state.total_fail,
-        st.session_state.total_introuvable,
-    )
-    render_result_final(st.session_state.results)
+        driver = webdriver.Chrome(options=
